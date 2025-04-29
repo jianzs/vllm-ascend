@@ -13,44 +13,21 @@ export VLLM_USE_V1=1
 # vLLM-Ascend Environment configuration
 export GLOBAL_RANKTABLE="${current_dir}/global_ranktable.json"
 # The following environment variables are required for LLMDataDist.
-export PROMPT_DEVICE_ID=0,1,2,3
-export DECODE_DEVICE_ID=4,5,6,7
+export PROMPT_DEVICE_ID_0=0,1,2,3
+export DECODE_DEVICE_ID_0=4,5,6,7
 export NUM_PROMPT_INSTANCE=1
 export NUM_DECODE_INSTANCE=1
 
-export TENSOR_PARALLEL_SIZE=$(($(echo $PROMPT_DEVICE_ID | grep -o ',' | wc -l) + 1))
+export TENSOR_PARALLEL_SIZE=$(($(echo $PROMPT_DEVICE_ID_0 | grep -o ',' | wc -l) + 1))
 
 # Model Configuration
 export MODEL_NAME="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-
 # Generate the global rank table
 if [ ! -f "${GLOBAL_RANKTABLE}" ]; then
     echo "Generating global rank table..."
-
-    OUTPUT_DIR="${current_dir}"
-    generate_hccl() {
-        local role=$1
-        local intance_index=$2
-        if [ "$role" == "prefill" ]; then
-            devices=(${PROMPT_DEVICE_ID//,/ })
-        else
-            devices=(${DECODE_DEVICE_ID//,/ })
-        fi
-        local start=${devices[0]}
-        local end=$((${devices[-1]}+1))
-        python rank_table_utils.py generate \
-            --device_num="[$start,$end)" \
-            --visible_devices=$(IFS=,; echo "${devices[*]}") \
-            --instance_role $role \
-            --instance_rank $intance_index \
-            --num_instances $((role == "prefill"? $NUM_PROMPT_INSTANCE : $NUM_DECODE_INSTANCE)) \
-            --output_dir=$OUTPUT_DIR
-    }
-
-    generate_hccl "prefill" 1
-    generate_hccl "decode" 1
-    python rank_table_utils.py merge $OUTPUT_DIR/prefill_*_rank_table_*.json $OUTPUT_DIR/decode_*_rank_table_*.json \
-        --output_dir=$OUTPUT_DIR
+    # run the script to generate the global rank table
+    bash "${current_dir}/gen_rank_table.sh"
+    
     echo "Global rank table generated."
 else
     echo "Global rank table already exists."
@@ -89,7 +66,7 @@ wait_for_server() {
     done" && return 0 || return 1
 }
 
-ASCEND_RT_VISIBLE_DEVICES=${PROMPT_DEVICE_ID} vllm serve ${MODEL_NAME} \
+ASCEND_RT_VISIBLE_DEVICES=${PROMPT_DEVICE_ID_0} vllm serve ${MODEL_NAME} \
     --port 8100 \
     --max-model-len 100 \
     --gpu-memory-utilization 0.9 \
@@ -109,7 +86,7 @@ ASCEND_RT_VISIBLE_DEVICES=${PROMPT_DEVICE_ID} vllm serve ${MODEL_NAME} \
         }
     }' &
 
-ASCEND_RT_VISIBLE_DEVICES=${DECODE_DEVICE_ID} vllm serve ${MODEL_NAME} \
+ASCEND_RT_VISIBLE_DEVICES=${DECODE_DEVICE_ID_0} vllm serve ${MODEL_NAME} \
     --port 8200 \
     --max-model-len 100 \
     --gpu-memory-utilization 0.9 \
@@ -135,4 +112,4 @@ wait_for_server 8200
 
 echo "🚧🚧 Warning: server started 🚧🚧"
 
-python3 disagg_prefill_proxy_server.py
+python3 disagg_prefill_proxy_server.py 

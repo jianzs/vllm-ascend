@@ -17,7 +17,6 @@ def parse_args():
 
     # Common arguments
     subparsers = parser.add_subparsers(dest='command', required=True)
-    subparsers.default = 'generate'
     
     # Generate command
     gen_parser = subparsers.add_parser('generate', help='Generate single RANK TABLE config file')
@@ -31,8 +30,6 @@ def parse_args():
                           help="Set the instance role, prefill or decode")
     gen_parser.add_argument("--instance_rank", type=int, default=0,
                           help="Set the instance rank")
-    gen_parser.add_argument("--num_instances", type=int, default=1,
-                          help="Set the number of instances")
     gen_parser.add_argument("--output_dir", type=str, default=os.getcwd(),
                           help="Directory to save the generated rank_table config file")
 
@@ -64,8 +61,8 @@ def generate_rank_table(args):
 
     # server_id
     ip = get_host_ip()
-    server_id = args.server_ip if args.server_ip else ip
-    if not server_id:
+    server_ip = ip if ip else args.server_ip
+    if not server_ip:
         raise ValueError("Please input server ip!")
 
     # device_num
@@ -80,19 +77,24 @@ def generate_rank_table(args):
     # construct rank_table
     device_ips: Dict[Any, Any] = {}
     try:
-        for device_id in device_num_list:
-            ret = os.popen(f"hccn_tool -i {device_id} -ip -g").readlines()
-            device_ips[str(device_id)] = ret[0].split(":")[1].replace('\n', '')
-    except IndexError:
+        # make sure the /etc/hccn.conf configuration file is correct
+        with open('/etc/hccn.conf', 'r') as fin:
+            for hccn_item in fin.readlines():
+                if hccn_item.strip().startswith('address_'):
+                    device_id, device_ip = hccn_item.split('=')
+                    device_id = device_id.split('_')[1]
+                    device_ips[device_id] = device_ip.strip()
+    except OSError:
         try:
-            with open('/etc/hccn.conf', 'r') as fin:
-                for hccn_item in fin.readlines():
-                    if hccn_item.strip().startswith('address_'):
-                        device_id, device_ip = hccn_item.split('=')
-                        device_id = device_id.split('_')[1]
-                        device_ips[device_id] = device_ip.strip()
-        except OSError:
-            raise SystemError("Failed to find information for rank_table")
+            for device_id in device_num_list:
+                ret = os.popen(f"hccn_tool -i {device_id} -ip -g").readlines()
+                device_ips[str(device_id)] = ret[0].split(":")[1].replace('\n', '')
+        except:
+            raise SystemError(
+                "Failed to get device IPs. Need either:\n"
+                "1. hccn_tool in PATH\n"
+                "2. /etc/hccn.conf configuration file"
+            )
 
     rank_table = {
         'version': '1.0',
@@ -115,10 +117,9 @@ def generate_rank_table(args):
         rank_id += 1
         device_list.append(device)
 
-    global_instance_rank = args.num_instances + args.instance_rank
     rank_table['server_list'].append({
-        'server_id': f"server-{global_instance_rank}",
-        'server_ip': server_id,
+        'server_id': f"server-{args.instance_rank}",
+        'server_ip': server_ip,
         'device': device_list,
     })
 
@@ -158,18 +159,26 @@ def merge_rank_table(args):
     }
 
     if prefill_jsons:
+        prefill_servers = []
+        for j in prefill_jsons:
+            prefill_servers.extend(j['server_list'])
+        
         rank_table['server_group_list'].append({
             "group_id": "1",
             "server_count": str(len(prefill_jsons)),
-            "server_list": [s for j in prefill_jsons for s in j['server_list']]
+            "server_list": prefill_servers
         })
 
     if decode_jsons:
+        decode_servers = []
+        for j in decode_jsons:
+            decode_servers.extend(j['server_list'])
+        
         rank_table['server_group_list'].append({
             "group_id": "2",
             "server_count": str(len(decode_jsons)),
-            "server_list": [s for j in decode_jsons for s in j['server_list']]
-        })
+            "server_list": decode_servers
+    })
 
     rank_id = 0
     server_id_counter = 0
