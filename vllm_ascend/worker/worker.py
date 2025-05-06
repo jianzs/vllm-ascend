@@ -21,7 +21,6 @@ import gc
 import os
 from typing import Dict, List, Optional, Set, Tuple, Type, Union
 
-import msgpack  # type: ignore
 import torch
 import torch.distributed
 import zmq
@@ -41,6 +40,7 @@ from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sequence import (ExecuteModelRequest, IntermediateTensors,
                            SequenceGroupMetadata, SequenceGroupMetadataDelta)
 from vllm.utils import GiB_bytes, bind_kv_cache, get_ip
+from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.enc_dec_model_runner import EncoderDecoderModelRunner
 from vllm.worker.model_runner_base import ModelRunnerBase
@@ -160,6 +160,7 @@ class NPUWorker(LocalOrDistributedWorkerBase):
         else:
             self.profiler = None
 
+        self.encoder = MsgpackEncoder()
         self.enable_dummy_run = False
         if os.getenv("VLLM_DP_PROXY_IP", None):
             logger.warning("enable dummy run for the DP")
@@ -182,7 +183,7 @@ class NPUWorker(LocalOrDistributedWorkerBase):
             sock.connect(f"tcp://{dp_proxy_listener_addr}")
             data = {"type": "DP", "http_address": self.http_addr}
             for _ in range(10):
-                sock.send(msgpack.dumps(data))
+                sock.send(self.encoder.encode(data))
 
             self.notify_socket = context.socket(zmq.PUSH)  # type: ignore
             self.notify_socket.connect(f"tcp://{self.dp_proxy_monitor_addr}")
@@ -409,7 +410,8 @@ class NPUWorker(LocalOrDistributedWorkerBase):
             logger.debug(
                 f"send notify to the dp proxy: {self.dp_proxy_monitor_addr}")
             data = {"info": "notify_step", "http_address": self.http_addr}
-            self.notify_socket.send(msgpack.dumps(data))
+            message = self.encoder.encode(data)
+            self.notify_socket.send(message)
         virtual_engine = worker_input.virtual_engine
         # Issue cache operations.
         if (worker_input.blocks_to_swap_in is not None

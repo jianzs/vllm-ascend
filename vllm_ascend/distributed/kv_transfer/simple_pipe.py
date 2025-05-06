@@ -20,7 +20,6 @@ import time
 from typing import Optional
 
 import llm_datadist  # type: ignore
-import msgpack  # type: ignore
 import torch
 import torch_npu
 import torchair  # type: ignore
@@ -28,6 +27,7 @@ import zmq  # type: ignore
 from vllm.distributed.kv_transfer.kv_pipe.base import KVPipeBase
 from vllm.logger import init_logger
 from vllm.utils import get_ip
+from vllm.v1.serial_utils import MsgpackEncoder
 
 import vllm_ascend.envs as envs
 from vllm_ascend.distributed.kv_transfer.utils import NPU_DTYPE_TO_TORCH_DTYPE
@@ -126,6 +126,8 @@ class SimplePipe(KVPipeBase):
                 target=self._register_to_proxy, daemon=True)
             self._register_thread.start()
 
+        self.encoder = MsgpackEncoder()
+
     def _prepare_data_dist(self):
         options = {
             "llm.SyncKvCacheWaitTime": envs.LLMDATADIST_SYNC_CACHE_WAIT_TIME,
@@ -162,7 +164,8 @@ class SimplePipe(KVPipeBase):
             "zmq_address": self.zmq_address,
         }
         while True:
-            sock.send(msgpack.dumps(data))
+            message = self.encoder.encode(data)
+            sock.send(message)
             time.sleep(3)
 
     def send_tensor(

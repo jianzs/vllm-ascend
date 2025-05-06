@@ -4,9 +4,9 @@ import threading
 import uuid
 
 import aiohttp
-import msgpack  # type: ignore
 import zmq
 from quart import Quart, make_response, request
+from vllm.v1.serial_utils import MsgpackDecoder
 
 prefill_instances: dict[str, str] = {}  # http_address: zmq_address
 decode_instances: dict[str, str] = {}  # http_address: zmq_address
@@ -16,13 +16,15 @@ decode_cv = threading.Condition()
 
 
 def _listen_for_register(poller, router_socket):
+    decoder = MsgpackDecoder()
+
     while True:
         socks = dict(poller.poll())
         if router_socket in socks:
             remote_address, message = router_socket.recv_multipart()
             # data: {"type": "P", "http_address": "ip:port",
             #        "zmq_address": "ip:port"}
-            data = msgpack.loads(message)
+            data = decoder.decode(message)
             if data["type"] == "P":
                 global prefill_instances
                 global prefill_cv

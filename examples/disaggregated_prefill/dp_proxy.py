@@ -9,9 +9,10 @@ import time
 import uuid
 
 import aiohttp
-import msgpack  # type: ignore
 import zmq
+from msgpack import UnpackException  # type: ignore
 from quart import Quart, make_response, request
+from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 
 DP_PROXY_HTTP_PORT = 10004
 DP_PROXY_ZMQ_REG_PORT = 30006
@@ -79,6 +80,8 @@ def metadata_collect_trigger(poller, router_socket):
     global _idle_send_loop
     with dp_cv:
         dp_cv.wait()
+
+    decoder = MsgpackDecoder()
     while True:
         try:
             schedule_dict = copy.deepcopy(dp_instances)
@@ -111,7 +114,7 @@ def metadata_collect_trigger(poller, router_socket):
                     try:
                         # {"info": "notify_step", "http_address": ""}
                         for message in messages:
-                            data = msgpack.loads(message)
+                            data = decoder.decode(message)
                             http_addr = None
                             logger.debug(f"receive message {data}")
                             if data.get("info") == "notify_step":
@@ -129,7 +132,7 @@ def metadata_collect_trigger(poller, router_socket):
                                 logger.warning(
                                     "Got unrecognize info type! We only accept notify step info yet"
                                 )
-                    except (msgpack.UnpackException, TypeError, KeyError) as e:
+                    except (UnpackException, TypeError, KeyError) as e:
                         logger.error(
                             f"Error processing message from {http_addr}: {e}. Message: {data}"
                         )
@@ -155,13 +158,14 @@ def _listen_for_d_register(poller, router_socket):
         f"DP Decode Proxy: D Node ZMQ Listener started on ROUTER port {DP_PROXY_ZMQ_REG_PORT}"
     )
 
+    decoder = MsgpackDecoder()
     while True:
         try:
             socks = dict(poller.poll(timeout=1000))
             if router_socket in socks:
                 remote_id, message = router_socket.recv_multipart()
                 try:
-                    data = msgpack.loads(message)
+                    data = decoder.decode(message)
                     if data.get("type") == "DP":
                         http_addr = data.get("http_address")
                         zmq_addr = data.get("zmq_address")
@@ -188,7 +192,7 @@ def _listen_for_d_register(poller, router_socket):
                             f"DP Decode Proxy: Received message with unexpected type from {remote_id.decode()}. Type: {data.get('type')}, Data: {data}"
                         )
 
-                except (msgpack.UnpackException, TypeError, KeyError) as e:
+                except (UnpackException, TypeError, KeyError) as e:
                     logger.error(
                         f"DP Decode Proxy: Error processing D Node registration from {remote_id.decode()}: {e}. Message: {message}"
                     )
@@ -217,6 +221,7 @@ def _listen_for_d_register(poller, router_socket):
 def _register_to_pd_proxy(pd_proxy_zmq_addr, my_http_addr, my_zmq_addr):
     context = None
     sock = None
+    encoder = MsgpackEncoder()
     while True:
         try:
             if context is None:
@@ -242,7 +247,7 @@ def _register_to_pd_proxy(pd_proxy_zmq_addr, my_http_addr, my_zmq_addr):
             logger.debug(
                 f"DP Decode Proxy: Sending registration/heartbeat to PD Proxy: {data}"
             )
-            sock.send(msgpack.dumps(data))
+            sock.send(encoder.encode(data))
             time.sleep(5)
 
         except zmq.ZMQError as e:  # type: ignore
