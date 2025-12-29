@@ -478,8 +478,7 @@ class AscendSharedFusedMoE(SharedFusedMoE, AscendFusedMoE):
         if self.multistream_overlap_gate:
             set_flash_common3_context(shared_experts=self._shared_experts)
 
-        before_routed_experts = torch.npu.Event()
-        before_routed_experts.record()
+        before_routed_experts = torch.npu.current_stream().record_event()
         fused_moe_results = AscendFusedMoE.forward_impl(
             self,
             hidden_states=hidden_states,
