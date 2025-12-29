@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 import torch
 from vllm.forward_context import get_forward_context
@@ -51,6 +51,11 @@ def setup_moe_comm_method(moe_config):
 @dataclass
 class FusedExpertsResult:
     routed_out: torch.Tensor
+    # This field is for shared experts and should be set by the MoE
+    # communication method that supports shared experts in parallel with routed
+    # experts.
+    before_dispatch_evt: torch.npu.Event | None = None
+    before_combine_evt: torch.npu.Event | None = None
     # For dynamic_eplb
     group_list_type: int | None = None
     expert_tokens: torch.Tensor | None = None
@@ -64,6 +69,9 @@ class MoECommMethod(ABC):
 
         self.token_dispatcher = self._get_token_dispatcher()
         self.prepare_finalize = self._get_prepare_finalize()
+        
+        self._before_dispatch_evt = torch.npu.Event()
+        self._before_combine_evt = torch.npu.Event()
 
     def prepare(
         self,
@@ -108,10 +116,6 @@ class MoECommMethod(ABC):
             w2_scale_bias: torch.Tensor = None,
             w1_offset: Optional[torch.Tensor] = None,
             w2_offset: Optional[torch.Tensor] = None,
-            # For Cube/Vector parallel
-            shared_experts: Optional[Any] = None,
-            quantized_x_for_share: Optional[Any] = None,
-            dynamic_scale_for_share: Optional[Any] = None,
             # For load balance
             log2phy: torch.Tensor = None,
             global_redundant_expert_num: int = 0,
@@ -127,6 +131,7 @@ class MoECommMethod(ABC):
         moe_comm_method = get_forward_context().moe_comm_method
         assert moe_comm_method is not None, "Missing communication context"
 
+        self._before_dispatch_evt.record()
         dispatch_results = self.token_dispatcher.token_dispatch(
             hidden_states=hidden_states,
             topk_weights=topk_weights,
@@ -134,9 +139,6 @@ class MoECommMethod(ABC):
             expert_map=expert_map,
             log2phy=log2phy,
             global_redundant_expert_num=global_redundant_expert_num,
-            shared_experts=shared_experts,
-            quantized_x_for_share=quantized_x_for_share,
-            dynamic_scale_for_share=dynamic_scale_for_share,
             mc2_mask=mc2_mask,
             apply_router_weight_on_input=apply_router_weight_on_input,
             with_quant=use_int8_w8a8 or use_int4_w4a8,
@@ -162,12 +164,15 @@ class MoECommMethod(ABC):
             need_trans=need_trans,
             dynamic_eplb=dynamic_eplb)
 
+        self._before_combine_evt.record()
         combine_results = self.token_dispatcher.token_combine(
             hidden_states=mlp_output,
             context_metadata=dispatch_results.context_metadata)
 
         return FusedExpertsResult(
             routed_out=combine_results.routed_out,
+            before_dispatch_evt=self._before_dispatch_evt,
+            before_combine_evt=self._before_combine_evt,
             group_list_type=dispatch_results.group_list_type,
             expert_tokens=dispatch_results.group_list)
 
@@ -284,10 +289,6 @@ class FusedMC2CommImpl(MoECommMethod):
             w2_scale_bias: torch.Tensor = None,
             w1_offset: Optional[torch.Tensor] = None,
             w2_offset: Optional[torch.Tensor] = None,
-            # For Cube/Vector parallel
-            shared_experts: Optional[Any] = None,
-            quantized_x_for_share: Optional[Any] = None,
-            dynamic_scale_for_share: Optional[Any] = None,
             # For load balance
             log2phy: torch.Tensor = None,
             global_redundant_expert_num: int = 0,

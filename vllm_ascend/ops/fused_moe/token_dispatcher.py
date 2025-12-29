@@ -82,9 +82,6 @@ class MoETokenDispatcher(ABC):
         expert_map: Optional[torch.Tensor] = None,
         log2phy: Optional[torch.Tensor] = None,
         global_redundant_expert_num: int = 0,
-        shared_experts: Optional[Any] = None,
-        quantized_x_for_share: Optional[Any] = None,
-        dynamic_scale_for_share: Optional[Any] = None,
         mc2_mask: Optional[torch.Tensor] = None,
         apply_router_weight_on_input: bool = False,
         with_quant: bool = False,
@@ -197,9 +194,6 @@ class TokenDispatcherWithMC2(MoETokenDispatcher):
                        expert_map: Optional[torch.Tensor] = None,
                        log2phy: Optional[torch.Tensor] = None,
                        global_redundant_expert_num: int = 0,
-                       shared_experts: Optional[Any] = None,
-                       quantized_x_for_share: Optional[Any] = None,
-                       dynamic_scale_for_share: Optional[Any] = None,
                        mc2_mask: Optional[torch.Tensor] = None,
                        apply_router_weight_on_input: bool = False,
                        with_quant: bool = False,
@@ -230,12 +224,10 @@ class TokenDispatcherWithMC2(MoETokenDispatcher):
             "ep_recv_counts": ep_recv_counts,
             "tp_recv_counts": tp_recv_counts,
             "assist_info_for_combine": assist_info_for_combine,
-            "shared_experts": shared_experts,
             "expand_scales": expand_scales
         }
 
         group_list_type = 0
-
         return TokenDispatchResult(hidden_states=expand_x,
                                    dynamic_scale=dynamic_scale,
                                    group_list=expert_token_nums,
@@ -302,7 +294,9 @@ class TokenDispatcherWithMC2(MoETokenDispatcher):
         combined_output = torch_npu.npu_moe_distribute_combine_v2(**kwargs_mc2) \
             if self.enable_dispatch_v2 else torch_npu.npu_moe_distribute_combine(**kwargs_mc2)
 
-        return TokenCombineResult(routed_out=combined_output)
+        return TokenCombineResult(
+            routed_out=combined_output,
+        )
 
 
 class TokenDispatcherWithAllGather(MoETokenDispatcher):
@@ -324,9 +318,6 @@ class TokenDispatcherWithAllGather(MoETokenDispatcher):
                        expert_map: Optional[torch.Tensor] = None,
                        log2phy: Optional[torch.Tensor] = None,
                        global_redundant_expert_num: int = 0,
-                       shared_experts: Optional[Any] = None,
-                       quantized_x_for_share: Optional[Any] = None,
-                       dynamic_scale_for_share: Optional[Any] = None,
                        mc2_mask: Optional[torch.Tensor] = None,
                        apply_router_weight_on_input: bool = False,
                        with_quant: bool = False,
@@ -447,9 +438,6 @@ class TokenDispatcherWithAll2AllV(MoETokenDispatcher):
                        expert_map: Optional[torch.Tensor] = None,
                        log2phy: Optional[torch.Tensor] = None,
                        global_redundant_expert_num: int = 0,
-                       shared_experts: Optional[Any] = None,
-                       quantized_x_for_share: Optional[Any] = None,
-                       dynamic_scale_for_share: Optional[Any] = None,
                        mc2_mask: Optional[torch.Tensor] = None,
                        apply_router_weight_on_input: bool = False,
                        with_quant: bool = False,
