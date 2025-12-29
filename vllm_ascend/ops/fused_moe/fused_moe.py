@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import torch
 from vllm.config import get_current_vllm_config
@@ -436,26 +436,30 @@ class AscendSharedFusedMoE(SharedFusedMoE, AscendFusedMoE):
         )
         return shared_out, fused_out
 
-    def forward_shared_experts(self, hidden_states: torch.Tensor, fused_moe_evts: FusedMoEEvents):
+    def forward_shared_experts(self, hidden_states: torch.Tensor,
+                               fused_moe_evts: FusedMoEEvents):
 
         def maybe_wait_event(evt: torch.npu.Event | None):
             if evt is not None:
                 torch.npu.current_stream().wait_event(evt)
 
-        with npu_stream_switch(
-            shared_experts_calculation_stream(),
-            enabled=self.multistream_overlap_shared_expert):
+        with npu_stream_switch(shared_experts_calculation_stream(),
+                               enabled=self.multistream_overlap_shared_expert):
             # Ensure the shared experts wait for hidden_states to be ready.
-            torch.npu.current_stream().wait_event(fused_moe_evts.before_routed_experts)
+            torch.npu.current_stream().wait_event(
+                fused_moe_evts.before_routed_experts)
             # Execute the gate projection and activation concurrently with the
             # dispatch communication.
             maybe_wait_event(fused_moe_evts.before_dispatch)
-            shared_gate_up, _ = self._shared_experts.gate_up_proj(hidden_states) # type: ignore
-            shared_act = self._shared_experts.act_fn(shared_gate_up) # type: ignore
+            shared_gate_up, _ = self._shared_experts.gate_up_proj(
+                hidden_states)  # type: ignore
+            shared_act = self._shared_experts.act_fn(
+                shared_gate_up)  # type: ignore
             # Execute the down projection concurrently with the combine
             # communication.
             maybe_wait_event(fused_moe_evts.before_combine)
-            shared_out, _ = self._shared_experts.down_proj(shared_act) # type: ignore
+            shared_out, _ = self._shared_experts.down_proj(
+                shared_act)  # type: ignore
 
         # Make sure the default stream waits for the shared experts stream to
         # finish.

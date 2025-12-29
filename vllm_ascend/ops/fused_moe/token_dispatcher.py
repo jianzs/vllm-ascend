@@ -22,7 +22,7 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 import torch
 import torch_npu
@@ -294,9 +294,7 @@ class TokenDispatcherWithMC2(MoETokenDispatcher):
         combined_output = torch_npu.npu_moe_distribute_combine_v2(**kwargs_mc2) \
             if self.enable_dispatch_v2 else torch_npu.npu_moe_distribute_combine(**kwargs_mc2)
 
-        return TokenCombineResult(
-            routed_out=combined_output,
-        )
+        return TokenCombineResult(routed_out=combined_output, )
 
 
 class TokenDispatcherWithAllGather(MoETokenDispatcher):

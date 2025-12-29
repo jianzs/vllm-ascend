@@ -69,7 +69,7 @@ class MoECommMethod(ABC):
 
         self.token_dispatcher = self._get_token_dispatcher()
         self.prepare_finalize = self._get_prepare_finalize()
-        
+
         self._before_dispatch_evt = torch.npu.Event()
         self._before_combine_evt = torch.npu.Event()
 
