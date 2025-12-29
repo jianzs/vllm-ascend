@@ -433,7 +433,7 @@ class AscendSharedFusedMoE(SharedFusedMoE, AscendFusedMoE):
         )
         return shared_out, fused_out
 
-    def forward_shared_experts(self, hidden_states: torch.Tensor,
+    def _forward_shared_experts(self, hidden_states: torch.Tensor,
                                fused_moe_evts: FusedMoEEvents):
 
         def maybe_wait_event(evt: torch.npu.Event | None):
@@ -492,7 +492,7 @@ class AscendSharedFusedMoE(SharedFusedMoE, AscendFusedMoE):
             assert fc3_context is not None
             shared_out = fc3_context.shared_out
         else:
-            shared_out = self.forward_shared_experts(
+            shared_out = self._forward_shared_experts(
                 hidden_states,
                 FusedMoEEvents(
                     before_routed_experts=before_routed_experts,
