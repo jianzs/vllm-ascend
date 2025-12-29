@@ -263,9 +263,6 @@ class AscendFusedMoE(FusedMoE):
                      router_logits: torch.Tensor) -> FusedMoEResult:
         assert self.quant_method is not None
 
-        # For w8a8 dynamic we can do npu_dynamic_quant and gate in parallel.
-        quantized_x_for_share, dynamic_scale_for_share = None, None
-
         forward_context = get_forward_context()
 
         # Load balancing for token distribution among experts in dummy_run
@@ -466,6 +463,14 @@ class AscendSharedFusedMoE(SharedFusedMoE, AscendFusedMoE):
         if self.multistream_overlap_shared_expert:
             torch.npu.current_stream().wait_stream(
                 shared_experts_calculation_stream())
+
+        # NOTE: This is exactly the opposite of
+        # `maybe_all_reduce_tensor_model_parallel`
+        forward_context = get_forward_context()
+        moe_comm_type = forward_context.moe_comm_type
+        if moe_comm_type in {MoECommType.ALLTOALL, MoECommType.MC2, MoECommType.FUSED_MC2} \
+                and not shared_expert_dp_enabled():
+            shared_out = tensor_model_parallel_all_reduce(shared_out)
         return shared_out
 
     def forward_impl(self, hidden_states: torch.Tensor,
@@ -494,13 +499,5 @@ class AscendSharedFusedMoE(SharedFusedMoE, AscendFusedMoE):
                     before_dispatch=fused_moe_results.before_dispatch_evt,
                     before_combine=fused_moe_results.before_combine_evt,
                 ))
-
-            # NOTE: This is exactly the opposite of
-            # `maybe_all_reduce_tensor_model_parallel`
-            forward_context = get_forward_context()
-            moe_comm_type = forward_context.moe_comm_type
-            if moe_comm_type in {MoECommType.ALLTOALL, MoECommType.MC2, MoECommType.FUSED_MC2} \
-                    and not shared_expert_dp_enabled():
-                shared_out = tensor_model_parallel_all_reduce(shared_out)
 
         return shared_out, routed_out
