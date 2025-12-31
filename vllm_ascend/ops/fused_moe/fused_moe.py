@@ -434,7 +434,7 @@ class AscendSharedFusedMoE(SharedFusedMoE, AscendFusedMoE):
         return shared_out, fused_out
 
     def _forward_shared_experts(self, hidden_states: torch.Tensor,
-                               fused_moe_evts: FusedMoEEvents):
+                                fused_moe_evts: FusedMoEEvents):
 
         def maybe_wait_event(evt: torch.npu.Event | None):
             if evt is not None:
