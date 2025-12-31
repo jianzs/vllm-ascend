@@ -255,6 +255,7 @@ class TokenDispatcherWithMC2(MoETokenDispatcher):
             "shared_expert_rank_num": 0,
             "moe_expert_num": moe_expert_num,
             "global_bs": self.global_bs,
+            "comm_quant_mode": 2,
         }
 
         if self.with_quant:

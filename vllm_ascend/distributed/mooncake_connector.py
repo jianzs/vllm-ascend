@@ -464,7 +464,9 @@ class KVCacheRecvingThread(threading.Thread):
             return
 
         num_remote_blocks = len(remote_block_ids)
-        assert num_local_blocks <= num_remote_blocks
+        assert num_local_blocks <= num_remote_blocks, (
+            f"Number of local blocks {num_local_blocks} exceeds number of "
+            f"remote blocks {num_remote_blocks} for request {request_id}.")
         if num_local_blocks < num_remote_blocks:
             remote_block_ids = remote_block_ids[-num_local_blocks:]
 
@@ -493,6 +495,7 @@ class KVCacheRecvingThread(threading.Thread):
         num_layers = self.model_config.hf_text_config.num_hidden_layers
         first_layer_index, end_layer_index = get_pp_indices(
             num_layers, prefill_pp_rank, self._prefill_pp_size)
+        end_layer_index += 1
         num_cache_per_layer = len(list(
             self.kv_caches.values())[0])  # Number of KV caches per layer
         local_kv_caches_base_addrs = \
@@ -937,7 +940,8 @@ class MooncakeConnectorScheduler:
             # Remote prefill: get all prompt blocks from remote.
             assert num_computed_tokens % self.block_size == 0
             # Note: We use the full token count as transmit data here.
-            count = max(len(request.prompt_token_ids) - num_computed_tokens, 0)
+            num_original_prompt_tokens = len(request.prompt_token_ids) - 1
+            count = max(num_original_prompt_tokens - num_computed_tokens, 0)
             return count, count > 0
 
         # No remote prefill for this request.

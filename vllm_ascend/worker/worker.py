@@ -225,6 +225,9 @@ class NPUWorker(WorkerBase):
         NPUPlatform.seed_everything(self.model_config.seed)
         # Initialize device properties used by triton kernels.
         init_device_properties_triton()
+        # if self.vllm_config.kv_transfer_config.is_kv_consumer:
+        #     rank = torch.distributed.get_rank()
+        #     set_device_tensor(torch.tensor(rank, device=device))
         return device
 
     def init_device(self):

@@ -122,6 +122,8 @@ class AscendVocabParallelEmbedding(VocabParallelEmbedding):
                                          self.num_embeddings_padded,
                                          params_dtype=params_dtype,
                                          weight_loader=self.weight_loader)
+        
+        self.prefix = prefix
 
     def _get_masked_input_and_mask(
             self, input_: torch.Tensor, org_vocab_start_index: int,
@@ -156,7 +158,11 @@ class AscendVocabParallelEmbedding(VocabParallelEmbedding):
             return self._forward_origin(input_)
 
     def _forward_embed_tp(self, input_):
-        complete_input = self.comm_group.all_gather(input_, dim=0)
+        # debug(f"{input_.shape=}", in_graph=True)
+        complete_input = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(
+            input_, False, prefix=self.prefix)
+        # complete_input = self.comm_group.all_gather(input_, dim=0)
+        # debug(f"{complete_input.shape=}", in_graph=True)
         masked_input, input_mask = self._get_masked_input_and_mask(
             complete_input, self.shard_indices.org_vocab_start_index,
             self.shard_indices.org_vocab_end_index,
@@ -167,7 +173,10 @@ class AscendVocabParallelEmbedding(VocabParallelEmbedding):
         output_parallel = self.quant_method.embedding(self,
                                                       masked_input.long())
         output_parallel.masked_fill_(input_mask.unsqueeze(-1), 0)
-        output = self.comm_group.reduce_scatter(output_parallel, dim=0)
+        # debug(f"{output_parallel.shape=}", in_graph=True)
+        output = torch.ops.vllm.maybe_pad_and_reduce(output_parallel, prefix=self.prefix)
+        # output = self.comm_group.reduce_scatter(output_parallel, dim=0)
+        # debug(f"{output.shape=}", in_graph=True)
         output = output.view(input_.shape[0], -1)
         return output
 

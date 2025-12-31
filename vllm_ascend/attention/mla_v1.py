@@ -904,6 +904,16 @@ class AscendMLAImpl(MLAAttentionImpl):
         self.quant_offset1 = self.q_proj.input_offset.data
         self.ctkv_scale = torch.tensor([1], dtype=act_dtype, device=device)
         self.q_nope_scale = torch.tensor([1], dtype=act_dtype, device=device)
+        
+        if self.vllm_config.kv_transfer_config is not None and \
+                self.vllm_config.kv_transfer_config.is_kv_consumer:
+            self.fused_qkv_a_proj.weight = None
+            self.fused_qkv_a_proj.deq_scale = None
+            self.fused_qkv_a_proj.quant_bias = None
+            self.q_proj.weight = None
+            self.q_proj.deq_scale = None
+            self.q_proj.quant_bias = None
+            torch.npu.empty_cache()
 
     def get_context_seq_len_npu(self, index: int,
                                 attn_metadata: AscendMLAMetadata):

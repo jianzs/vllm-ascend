@@ -103,9 +103,9 @@ from vllm_ascend.sample.sampler import AscendSampler
 from vllm_ascend.spec_decode import get_spec_decode_method
 from vllm_ascend.spec_decode.eagle_proposer import EagleProposer
 from vllm_ascend.spec_decode.mtp_proposer import MtpProposer
-from vllm_ascend.utils import (AscendDeviceType, ProfileExecuteDuration,
+from vllm_ascend.utils import (AscendDeviceType, ProfileExecuteDuration, embedding_tp_enable,
                                enable_sp, get_ascend_device_type, is_moe_model,
-                               lmhead_tp_enable, maybe_trans_nz,
+                               lmhead_tp_enable, maybe_trans_nz, oproj_tp_enable,
                                set_weight_prefetch_method)
 from vllm_ascend.worker.npu_input_batch import NPUInputBatch
 from vllm_ascend.worker.pcp_utils import PCPManager
@@ -407,6 +407,9 @@ class NPUModelRunner(GPUModelRunner):
         # Only applicable to MoE models and KV consumer ranks.
         if not is_moe_model(self.vllm_config) or not self.is_kv_consumer:
             return False
+
+        # if embedding_tp_enable() or oproj_tp_enable():
+        #     return False
 
         def needs_mc2(num_tokens: int) -> bool:
             return select_moe_comm_method(num_tokens, self.vllm_config) in {
@@ -1092,6 +1095,7 @@ class NPUModelRunner(GPUModelRunner):
                                              intermediate_tensors,
                                              inputs_embeds):
         assert self.model is not None
+        # debug(f"execute_model {input_ids.shape=}")
         hidden_states = self.model(
             input_ids=input_ids,
             positions=positions,
@@ -1362,6 +1366,7 @@ class NPUModelRunner(GPUModelRunner):
                     batch_descriptor=batch_descriptor,
                     num_actual_tokens=scheduler_output.
                     total_num_scheduled_tokens,
+                    max_num_batched_tokens=self.max_num_reqs * self.uniform_decode_query_len,
                     model_instance=self.model):
                 self.maybe_setup_kv_connector(scheduler_output)
 
@@ -1420,6 +1425,7 @@ class NPUModelRunner(GPUModelRunner):
                         isinstance(hidden_states[0], torch.Tensor):
                     hidden_states = hidden_states[0]
                 sample_hidden_states = hidden_states[logits_indices]
+                # debug(f"execute_model logits {sample_hidden_states.shape=}")
                 logits = self.model.compute_logits(sample_hidden_states)
             if broadcast_pp_output:
                 model_output_broadcast_data = {
@@ -1859,6 +1865,7 @@ class NPUModelRunner(GPUModelRunner):
     def _generate_dummy_run_hidden_states(self, input_ids, positions,
                                           num_tokens, intermediate_tensors,
                                           inputs_embeds):
+        # debug(f"dummy_run {input_ids.shape=}")
         hidden_states = self.model(input_ids=input_ids,
                                    positions=positions,
                                    intermediate_tensors=intermediate_tensors,
@@ -2063,9 +2070,10 @@ class NPUModelRunner(GPUModelRunner):
                     return None
                 return self.model.compute_logits(hidden_states[dummy_indices])
 
-            def dummy_drafter_compute_logits(hidden_states):
+            def dummy_drafter_compute_logits(step, hidden_states):
                 if not need_dummy_logits or self.drafter is None:
                     return
+                # debug(f"{step=} {hidden_states[dummy_indices].shape=}")
                 if hasattr(self.drafter, "model") and hasattr(
                         self.drafter.model, "compute_logits"):
                     return self.drafter.model.compute_logits(
@@ -2080,6 +2088,7 @@ class NPUModelRunner(GPUModelRunner):
                     num_actual_tokens=0,
                     aclgraph_runtime_mode=cudagraph_runtime_mode,
                     batch_descriptor=batch_descriptor,
+                    max_num_batched_tokens=max_num_reqs * self.uniform_decode_query_len,
                     model_instance=self.model):
                 hidden_states = self._generate_dummy_run_hidden_states(
                     input_ids, positions, num_tokens_padded,

@@ -209,6 +209,7 @@ class MtpProposer(EagleProposer):
                     num_actual_tokens=0,
                     aclgraph_runtime_mode=aclgraph_runtime_mode,
                     batch_descriptor=batch_descriptor,
+                    max_num_batched_tokens=self.runner.max_num_reqs * self.runner.uniform_decode_query_len,
                     is_draft_model=True,
                     in_profile_run=is_profile):
                 if self.enable_shared_expert_dp:
@@ -217,6 +218,7 @@ class MtpProposer(EagleProposer):
                     positions = positions.squeeze(-1)
                     previous_hidden_states = torch.ops.vllm.maybe_pad_and_reduce(
                         previous_hidden_states)
+                # debug(f"mtp dummy_run {input_ids.shape=}")
                 self.model(input_ids=input_ids,
                            positions=positions,
                            hidden_states=previous_hidden_states)
@@ -238,7 +240,7 @@ class MtpProposer(EagleProposer):
                         positions, True)
                     previous_hidden_states = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(
                         previous_hidden_states, True)
-                dummy_compute_logits(previous_hidden_states)
+                dummy_compute_logits(i, previous_hidden_states)
             if with_prefill:
                 break
 
@@ -641,6 +643,9 @@ class MtpProposer(EagleProposer):
          with_prefill) = self.runner._sync_metadata_across_dp(
              num_input_tokens, self.runner.with_prefill)
 
+        if self.runner.is_kv_consumer:
+            with_prefill = False
+
         # Enable shared_expert_dp and MTP FULL graph may cause accuracy issues.
         if scheduler_output and not self.enable_shared_expert_dp:
             max_query_len = common_attn_metadata.max_query_len
@@ -688,6 +693,7 @@ class MtpProposer(EagleProposer):
                     aclgraph_runtime_mode=aclgraph_runtime_mode,
                     batch_descriptor=batch_descriptor,
                     num_actual_tokens=num_tokens,
+                    max_num_batched_tokens=self.runner.max_num_reqs * self.runner.uniform_decode_query_len,
                     is_draft_model=True):
                 with ProfileExecuteDuration().capture_async('mtp_forward'):
                     model_kwargs = {}
@@ -704,7 +710,6 @@ class MtpProposer(EagleProposer):
                         positions = positions.squeeze(-1)
                         hidden_states = torch.ops.vllm.maybe_pad_and_reduce(
                             hidden_states)
-
                     for layer_name in self.attn_layer_name:
                         decode_metadata = getattr(attn_metadata[layer_name],
                                                   "decode", None)
@@ -717,6 +722,7 @@ class MtpProposer(EagleProposer):
                             decode_metadata.block_table = \
                                 decode_metadata.block_table[:actual_size]
 
+                    # debug(f"mtp execute_model {input_ids.shape=}")
                     hidden_states = self.model(input_ids=input_ids,
                                                positions=positions,
                                                hidden_states=hidden_states)
@@ -755,6 +761,7 @@ class MtpProposer(EagleProposer):
                     pcp_allgather_restore_idx.gpu[:hidden_states.shape[0]])
 
             sample_hidden_states = hidden_states[last_token_indices]
+            # debug(f"{step=} {with_prefill=} {sample_hidden_states.shape=}")
             logits = self.model.compute_logits(sample_hidden_states)
             if lmhead_tp_enable() and num_indices < logits.shape[0]:
                 logits = logits[:num_indices]

@@ -10,10 +10,11 @@ from vllm.distributed import (get_dp_group, get_ep_group,
 from vllm.forward_context import get_forward_context
 from vllm.utils.torch_utils import direct_register_custom_op
 
+from vllm_ascend.distributed.parallel_state import get_embed_tp_group
 import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_forward_context import MoECommType
 from vllm_ascend.ops.weight_prefetch import maybe_npu_prefetch
-from vllm_ascend.utils import npu_stream_switch, prefetch_stream
+from vllm_ascend.utils import embedding_tp_enable, npu_stream_switch, prefetch_stream
 
 
 def _maybe_chunk_residual_impl(x: torch.Tensor,
@@ -40,11 +41,30 @@ def _maybe_chunk_residual_impl(x: torch.Tensor,
 def _maybe_all_gather_and_maybe_unpad_impl(
         x: torch.Tensor,
         label: bool,
-        is_ep_comm: bool = False) -> torch.Tensor:
+        is_ep_comm: bool = False,
+        prefix: str = "") -> torch.Tensor:
     try:
         forward_context = get_forward_context()
     except AssertionError:
         return x
+
+    if "embed_tokens" in prefix and embedding_tp_enable():
+        acl_graph_print(f"{prefix} _maybe_all_gather_and_maybe_unpad_impl start {x.shape=}")
+        max_num_batched_tokens = forward_context.max_num_batched_tokens
+        # max_num_batched_tokens = forward_context.dp_metadata.max_tokens_across_dp_cpu
+
+        if max_num_batched_tokens > x.size(0):
+            # padded_x = F.pad(x, (0, max_num_batched_tokens - x.size(0))).contiguous()
+            padded_x = torch.empty(max_num_batched_tokens, *x.shape[1:],
+                                dtype=x.dtype, device=x.device)
+            padded_x[:x.size(0)] = x
+        else:
+            padded_x = x
+
+        acl_graph_print(f"{prefix} embed tp all gather before {padded_x.shape=}")
+        result = get_embed_tp_group().all_gather(padded_x, dim=0)
+        acl_graph_print(f"{prefix} embed tp all gather after {result.shape=}")
+        return result
 
     sp_enabled = forward_context.sp_enabled
     if sp_enabled and label:
@@ -75,11 +95,18 @@ def _maybe_all_gather_and_maybe_unpad_impl(
 
 
 def _maybe_pad_and_reduce_impl(x: torch.Tensor,
-                               is_ep_comm: bool = False) -> torch.Tensor:
+                               is_ep_comm: bool = False,
+                               prefix: str = "") -> torch.Tensor:
     try:
         forward_context = get_forward_context()
     except AssertionError:
         return tensor_model_parallel_all_reduce(x)
+
+    if "embed_tokens" in prefix and embedding_tp_enable():
+        num_tokens_across_dp_cpu = forward_context.dp_metadata.num_tokens_across_dp_cpu
+        cur_dp_rank = get_dp_group().rank_in_group
+        x = get_embed_tp_group().reduce_scatter(x, dim=0)
+        return x[:num_tokens_across_dp_cpu[cur_dp_rank]]
 
     if not getattr(forward_context, "sp_enabled", False):
         return tensor_model_parallel_all_reduce(x)
@@ -139,7 +166,15 @@ def _maybe_prefetch_mlp_gate_up_proj_impl(x_dependency: torch.Tensor,
 def _maybe_all_gather_and_maybe_unpad_fake(
         x: torch.Tensor,
         label: bool,
-        is_ep_comm: bool = False) -> torch.Tensor:
+        is_ep_comm: bool = False,
+        prefix: str = "") -> torch.Tensor:
+
+    if "embed_tokens" in prefix and embedding_tp_enable():
+        return torch.empty(
+            (get_max_num_batch_tokens() * get_embed_tp_group().world_size,
+             *x.shape[1:]),
+            device=x.device,
+            dtype=x.dtype)
 
     if get_forward_context().sp_enabled and label:
         return torch.empty(
@@ -152,7 +187,15 @@ def _maybe_all_gather_and_maybe_unpad_fake(
 
 
 def _maybe_pad_and_reduce_fake(x: torch.Tensor,
-                               is_ep_comm: bool = False) -> torch.Tensor:
+                               is_ep_comm: bool = False,
+                               prefix: str = "") -> torch.Tensor:
+    if "embed_tokens" in prefix and embedding_tp_enable():
+        return torch.empty(
+            (x.shape[0] // get_embed_tp_group().world_size,
+             *x.shape[1:]),
+            device=x.device,
+            dtype=x.dtype)
+
     if get_forward_context().sp_enabled:
         return torch.empty(
             (x.shape[0] // get_tensor_model_parallel_world_size(),
@@ -369,3 +412,20 @@ direct_register_custom_op(op_name="quantize",
                           fake_impl=_quantize_impl_fake,
                           mutates_args=[],
                           dispatch_key="PrivateUse1")
+
+
+from vllm_ascend.utils import acl_graph_print
+
+def _acl_graph_print_impl(message: str, tensor: torch.Tensor) -> None:
+    acl_graph_print(message, tensor)
+
+def _acl_graph_print_impl_fake(message: str, tensor: torch.Tensor) -> None:
+    return
+
+
+direct_register_custom_op(op_name="acl_graph_print",
+                          op_func=_acl_graph_print_impl,
+                          fake_impl=_acl_graph_print_impl_fake,
+                          mutates_args=[],
+                          dispatch_key="PrivateUse1")
+                          

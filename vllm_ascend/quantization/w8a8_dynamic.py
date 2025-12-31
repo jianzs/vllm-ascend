@@ -102,6 +102,7 @@ class AscendW8A8DynamicLinearMethod:
 class AscendW8A8DynamicFusedMoEMethod:
     """FusedMoe method for Ascend W8A8_DYNAMIC.
     """
+    layer_idx = 0
 
     def __init__(self):
         self.ep_group = get_ep_group()
@@ -126,6 +127,16 @@ class AscendW8A8DynamicFusedMoEMethod:
                 local_rank)
         except AttributeError:
             self.moe_all_to_all_group_name = ""
+
+        max_graph_size = vllm_config.compilation_config.max_cudagraph_capture_size
+        if max_graph_size > 0:
+            self._layer_idx = AscendW8A8DynamicFusedMoEMethod.layer_idx
+            AscendW8A8DynamicFusedMoEMethod.layer_idx += 1
+            self.balanced_topk_ids = generate_balanced_topk_ids(
+                slen=max_graph_size, num_experts=256, num_groups=8, topk_group=4,
+                topk_token=8, layer_idx=self._layer_idx)
+        else:
+            self.balanced_topk_ids = None
 
     @staticmethod
     def get_weight(num_experts: int, intermediate_size_per_partition: int,
@@ -224,6 +235,10 @@ class AscendW8A8DynamicFusedMoEMethod:
                                        device=topk_ids.device)
             topk_ids = torch.argsort(
                 random_matrix, dim=1)[:, :topk_ids.size(1)].to(topk_ids.dtype)
+
+        # if get_forward_context().moe_comm_type in {MoECommType.MC2, MoECommType.FUSED_MC2} \
+        #     and self.balanced_topk_ids is not None:
+        #     topk_ids = self.balanced_topk_ids[:topk_ids.shape[0]].to(topk_ids.dtype)
 
         assert topk_weights is not None
         topk_weights = topk_weights.to(self.in_dtype)
@@ -325,3 +340,58 @@ def scale_from_float_to_int64(scale):
         np.frombuffer(scale.cpu().to(torch.float32).numpy().tobytes(),
                       dtype=np.int32).astype(np.int64)).to(scale.device)
     return scale
+
+
+def generate_balanced_topk_ids(
+    slen: int,
+    num_experts: int,
+    num_groups: int,
+    topk_group: int,
+    topk_token: int,
+    layer_idx: int,
+):
+    """
+    Generates balanced top-k expert indices for a sequence of tokens, ensuring
+    diversity across expert groups.
+
+    Notes:
+        - Each token randomly selects `topk_group` groups, then assigns each of
+          its `topk_token` expert selections to one of these groups.
+        - Within each assigned group, a unique expert is selected for each
+          token.
+        - The returned indices are balanced across groups and experts, with no
+          duplicate experts per token.
+        - All operations are performed on the "npu" device.
+    """
+    world_size = torch.distributed.get_world_size()
+    local_rank = torch.distributed.get_rank()
+    generator = torch.Generator(device="npu")
+    generator.manual_seed(layer_idx * world_size + local_rank)  # Set the random seed 
+    
+    num_experts_per_group = num_experts // num_groups
+    # Step 1: Randomly select topk_group groups from num_groups expert groups
+    # for each token
+    selected_groups = torch.randint(0, num_groups, 
+                                (slen, topk_group), 
+                                dtype=torch.int64, 
+                                device="npu",
+                                generator=generator)  # shape: (slen, topk_group)
+    # Step 2: For each token, randomly assign each topk_token to one of the
+    # selected groups
+    token_group_indices = torch.randint(0, topk_group, 
+                                    (slen, topk_token), 
+                                    dtype=torch.int64, 
+                                    device="npu",
+                                    generator=generator)  # shape: (slen, topk_token)
+    actual_groups = selected_groups.gather(-1, token_group_indices)  # shape: (slen, topk_token)
+    # Step 3: For each token, randomly select topk_token unique experts within
+    # the group (no duplicates)
+    expert_indices = torch.stack([
+        torch.randperm(num_experts_per_group, 
+                        device="npu", 
+                        generator=generator)[:topk_token] 
+        for _ in range(slen)
+    ]).to(torch.int64)  # shape: (slen, topk_token)
+    # Step 4: Calculate the final expert indices by adding group offset
+    final_expert_indices = expert_indices + actual_groups * num_experts_per_group
+    return final_expert_indices.to(torch.int32)

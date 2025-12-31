@@ -31,6 +31,7 @@ def set_ascend_forward_context(
         virtual_engine: int = 0,
         num_tokens: int = 0,
         num_tokens_across_dp: Optional[torch.Tensor] = None,
+        max_num_batched_tokens: Optional[int] = None,
         in_profile_run: bool = False,
         num_actual_tokens: Optional[int] = None,
         aclgraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
@@ -51,6 +52,11 @@ def set_ascend_forward_context(
             batch_descriptor=batch_descriptor,
     ):
         forward_context = get_forward_context()
+        
+        forward_context.max_num_batched_tokens = max_num_batched_tokens
+
+        forward_context.is_kv_consumer = vllm_config.kv_transfer_config and \
+            vllm_config.kv_transfer_config.is_kv_consumer
 
         from vllm_ascend.ops.fused_moe.moe_comm_method import \
             get_moe_comm_method
