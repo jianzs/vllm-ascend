@@ -450,11 +450,11 @@ class AscendSharedFusedMoE(SharedFusedMoE, AscendFusedMoE):
             maybe_wait_event(fused_moe_evts.before_dispatch)
             shared_gate_up, _ = self._shared_experts.gate_up_proj(
                 hidden_states)  # type: ignore
-            shared_act = self._shared_experts.act_fn(
-                shared_gate_up)  # type: ignore
             # Execute the down projection concurrently with the combine
             # communication.
             maybe_wait_event(fused_moe_evts.before_combine)
+            shared_act = self._shared_experts.act_fn(
+                shared_gate_up)  # type: ignore
             shared_out, _ = self._shared_experts.down_proj(
                 shared_act)  # type: ignore
 
