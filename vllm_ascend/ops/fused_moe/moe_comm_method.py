@@ -70,9 +70,6 @@ class MoECommMethod(ABC):
         self.token_dispatcher = self._get_token_dispatcher()
         self.prepare_finalize = self._get_prepare_finalize()
 
-        self._before_dispatch_evt = torch.npu.Event()
-        self._before_combine_evt = torch.npu.Event()
-
     def prepare(
         self,
         hidden_states: torch.Tensor,
@@ -131,7 +128,7 @@ class MoECommMethod(ABC):
         moe_comm_method = get_forward_context().moe_comm_method
         assert moe_comm_method is not None, "Missing communication context"
 
-        self._before_dispatch_evt.record()
+        before_dispatch_evt = torch.npu.current_stream().record_event()
         dispatch_results = self.token_dispatcher.token_dispatch(
             hidden_states=hidden_states,
             topk_weights=topk_weights,
@@ -164,15 +161,15 @@ class MoECommMethod(ABC):
             need_trans=need_trans,
             dynamic_eplb=dynamic_eplb)
 
-        self._before_combine_evt.record()
+        before_combine_evt = torch.npu.current_stream().record_event()
         combine_results = self.token_dispatcher.token_combine(
             hidden_states=mlp_output,
             context_metadata=dispatch_results.context_metadata)
 
         return FusedExpertsResult(
             routed_out=combine_results.routed_out,
-            before_dispatch_evt=self._before_dispatch_evt,
-            before_combine_evt=self._before_combine_evt,
+            before_dispatch_evt=before_dispatch_evt,
+            before_combine_evt=before_combine_evt,
             group_list_type=dispatch_results.group_list_type,
             expert_tokens=dispatch_results.group_list)
 
